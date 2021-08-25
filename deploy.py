@@ -22,11 +22,12 @@ from sagemaker.generate_resources import (
 )
 
 
-def deploy_to_sagemaker(bento_bundle_path, deployment_name, config_json, skip_stack_deployment):
+def deploy_to_sagemaker(bento_bundle_path, deployment_name, image_tag, config_json, skip_build, skip_push, skip_stack_deployment):
     # create deployable
     deployable_path, bento_name, bento_version = generate_deployable(
         bento_bundle_path, deployment_name
     )
+
     # generate names
     (
         model_repo_name,
@@ -34,7 +35,11 @@ def deploy_to_sagemaker(bento_bundle_path, deployment_name, config_json, skip_st
         endpoint_config_name,
         endpoint_name,
         api_gateway_name,
-    ) = generate_resource_names(deployment_name, bento_version)
+    ) = generate_resource_names(
+        deployment_name, 
+        image_tag if image_tag is not None else bento_version
+    )
+
     deployment_config = get_configuration_value(config_json)
 
     arn, aws_account_id = get_arn_from_aws(deployment_config.get("iam_role"))
@@ -46,13 +51,29 @@ def deploy_to_sagemaker(bento_bundle_path, deployment_name, config_json, skip_st
     )
 
     _, username, password = get_ecr_login_info(deployment_config["region"], registry_id)
-    image_tag = generate_docker_image_tag(registry_uri, bento_name, bento_version)
-    print(f"Build and push image {image_tag}")
-    build_docker_image(
-        context_path=deployable_path,
-        image_tag=image_tag,
-    )
-    push_docker_image_to_repository(image_tag, username=username, password=password)
+    if image_tag is None:
+        # The result of generate_docker_image_tag are the full URI:Tag string.
+        image_tag = generate_docker_image_tag(registry_uri, bento_name, bento_version)
+        print(f"Auto-generating image tag: {image_tag.split(':')[-1]}")
+    else:
+        # The variable image_tag is, below, meant to be the full URI:Tag string.
+        print(f"Using provided image tag: {image_tag}")
+        image_tag = f"{registry_uri}:{image_tag}"
+
+    if skip_build:
+        print(f"Skipping image build {image_tag}")
+    else:
+        print(f"Building image {image_tag}")
+        build_docker_image(
+            context_path=deployable_path,
+            image_tag=image_tag,
+        )
+
+    if skip_push:
+        print(f"Skipping image push {image_tag}")
+    else:
+        print(f"Pushing image {image_tag}")
+        push_docker_image_to_repository(image_tag, username=username, password=password)
 
     if skip_stack_deployment:
         print("Skipping stack deployment")
@@ -120,16 +141,28 @@ if __name__ == "__main__":
     parser.add_argument('--config_json', type=str,
                         default="sagemaker_config.json",
                         help='Deployment configuration json (default=sagemaker_config.json)')
+    parser.add_argument('--skip_build',
+                        default=False, action='store_true',
+                        help='Skip docker build?')
+    parser.add_argument('--skip_push',
+                        default=False, action='store_true',
+                        help='Skip docker push?')
     parser.add_argument('--skip_stack_deployment',
                         default=False, action='store_true',
                         help='Skip stack deployment?')
+    parser.add_argument('--image_tag',
+                        default=None, type=str,
+                        help='Desired tag (default: BentoML model tag)')
 
     args = parser.parse_args()
 
     deploy_to_sagemaker(
         args.bento_bundle_path, 
         args.deployment_name, 
+        args.image_tag,
         args.config_json,
+        args.skip_build,
+        args.skip_push,
         args.skip_stack_deployment
     )
     print("Done!")
